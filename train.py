@@ -11,13 +11,14 @@ from torch import optim
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
-from utils.data_loading import BasicDataset, CarvanaDataset
+from utils.data_loading import BasicDataset, CarvanaDataset, NpyDataset
 from utils.dice_score import dice_loss
 from evaluate import evaluate
 from unet import UNet
 
 dir_img = Path('./data/imgs/')
 dir_mask = Path('./data/masks/')
+dir_val = Path('./data/val/')
 dir_checkpoint = Path('./checkpoints/')
 
 
@@ -32,14 +33,20 @@ def train_net(net,
               amp: bool = False):
     # 1. Create dataset
     try:
-        dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
+        dataset = NpyDataset(dir_img, img_scale)
     except (AssertionError, RuntimeError):
         dataset = BasicDataset(dir_img, dir_mask, img_scale)
 
     # 2. Split into train / validation partitions
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    if(val_percent == 0):
+        train_set = dataset
+        val_set = NpyDataset(dir_val, img_scale)
+        n_val = len(val_set)
+        n_train = len(dataset)
+    else:
+        n_val = int(len(dataset) * val_percent)
+        n_train = len(dataset) - n_val
+        train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     # 3. Create data loaders
     loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=True)
@@ -130,7 +137,7 @@ def train_net(net,
                             'images': wandb.Image(images[0].cpu()),
                             'masks': {
                                 'true': wandb.Image(true_masks[0].float().cpu()),
-                                'pred': wandb.Image(torch.softmax(masks_pred, dim=1).argmax(dim=1)[0].float().cpu()),
+                                'pred': wandb.Image(torch.softmax(masks_pred, dim=1)[0].float().cpu()),
                             },
                             'step': global_step,
                             'epoch': epoch,
@@ -152,13 +159,17 @@ def get_args():
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
     parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0,
-                        help='Percent of the data that is used as validation (0-100)')
+                        help="Percent of the data that is used as validation (0-100)."
+                        "If 0 use non-random val set")               
     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
 
     return parser.parse_args()
 
 
 if __name__ == '__main__':
+    from os import environ
+    environ["WANDB_API_KEY"] = "2becf3745b072a89fd108238e2b60407fc915d70"
+
     args = get_args()
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -168,7 +179,7 @@ if __name__ == '__main__':
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_classes is the number of probabilities you want to get per pixel
-    net = UNet(n_channels=3, n_classes=2, bilinear=True)
+    net = UNet(n_channels=1, n_classes=3, bilinear=True)
 
     logging.info(f'Network:\n'
                  f'\t{net.n_channels} input channels\n'
